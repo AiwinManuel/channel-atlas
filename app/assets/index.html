@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=960, initial-scale=1, user-scalable=no">
+<title>Channel Atlas</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header id="top">
+  <div id="brand"><span class="mark"></span>Channel Atlas</div>
+  <div id="status"></div>
+</header>
+<nav id="chips"></nav>
+<div id="summary"></div>
+<main id="grid"></main>
+<footer id="hint"><b>OK</b> Watch <i>·</i> <b>☰</b> Favorite <i>·</i> <b>⏪ ⏩</b> Page <i>·</i> <b>Back</b> Exit</footer>
+
+<div id="picker" class="overlay hidden">
+  <div class="panel">
+    <div class="ptitle"></div>
+    <div class="plist"></div>
+    <div class="pfoot"><b>OK</b> Choose <i>·</i> <b>◀ ▶</b> Page <i>·</i> <b>Back</b> Close</div>
+  </div>
+</div>
+
+<div id="search" class="overlay hidden">
+  <div class="panel small">
+    <div class="ptitle">Search channels</div>
+    <input id="q" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" placeholder="Channel name">
+    <div class="pfoot"><b>Next</b> or <b>Back</b> on the keyboard to search <i>·</i> empty search shows everything</div>
+  </div>
+</div>
+
+<div id="loading" class="overlay">
+  <div class="panel small center">
+    <div class="spin"></div>
+    <div class="ptitle" id="ltitle">Getting the channel list…</div>
+    <div class="ltext" id="ltext">The first time takes about a minute.</div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
