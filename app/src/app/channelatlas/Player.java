@@ -4,22 +4,14 @@ import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.graphics.Color;
 import android.graphics.Outline;
-import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.media.AudioAttributes;
-import android.media.MediaCodecList;
-import android.media.MediaExtractor;
-import android.media.MediaFormat;
-import android.media.MediaPlayer;
-import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
-import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewOutlineProvider;
@@ -28,15 +20,20 @@ import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import androidx.media3.common.AudioAttributes;
+import androidx.media3.common.C;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.MimeTypes;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Tracks;
+import androidx.media3.common.VideoSize;
+import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -46,10 +43,11 @@ import java.util.Map;
  * NONE (hidden), FULL (whole screen, takes the remote) and MINI (a small window in the browsing screen's hero area
  * that keeps playing while you browse).
  *
- * A plain MediaPlayer on a TextureView: VideoView turns on closed captions by itself, and on Fire OS 7 (Android 9) the
- * media server crashes on some streams' captions. TextureView (unlike SurfaceView) resizes and clips smoothly.
+ * Plays with Media3 ExoPlayer on a TextureView (which resizes and clips smoothly). ExoPlayer reads HEVC in HLS, skips
+ * audio-only variants and tells which tracks the TV can decode, which Android's own MediaPlayer on Fire OS 7 doesn't.
+ * Captions stay off: they're rarely useful here and some streams' captions are broken.
  */
-final class Player implements TextureView.SurfaceTextureListener {
+final class Player {
     static final int NONE = 0, FULL = 1, MINI = 2;
 
     interface Listener {
@@ -57,7 +55,7 @@ final class Player implements TextureView.SurfaceTextureListener {
         void onPlayer(int mode, JSONObject channel);
     }
 
-    private static final int TIMEOUT_MS = 20_000;
+    private static final int TIMEOUT_MS = 20_000, PICTURE_MS = 12_000;
 
     private final Activity a;
     private final Listener listener;
@@ -75,12 +73,12 @@ final class Player implements TextureView.SurfaceTextureListener {
     private int[] current = {0, 0, 0, 0};
     private ValueAnimator anim;
 
-    private Surface surface;
-    private MediaPlayer player;
+    private ExoPlayer exo;
     private JSONArray list = new JSONArray();
     private int index;
     private JSONObject channel;
-    private int stream, generation, retries, videoW, videoH;
+    private int stream, generation, videoW, videoH;
+    private boolean ready, firstFrame, audioChecked;
     private String statusKind, badAudio;
 
     private final Runnable hideInfo;
@@ -109,7 +107,6 @@ final class Player implements TextureView.SurfaceTextureListener {
         root.addView(box, new FrameLayout.LayoutParams(0, 0));
 
         texture = new TextureView(a);
-        texture.setSurfaceTextureListener(this);
         box.addView(texture, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         box.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
             if (r - l != or - ol || b - t != ob - ot) box.post(this::fit);
@@ -227,30 +224,97 @@ final class Player implements TextureView.SurfaceTextureListener {
         box.invalidateOutline();
     }
 
-    // ---------- Surface
+    // ---------- ExoPlayer
 
-    @Override
-    public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int ht) {
-        surface = new Surface(st);
-        if (player != null) player.setSurface(surface);
-        else if (channel != null && mode != NONE) play();
+    private ExoPlayer exo() {
+        if (exo != null) return exo;
+        exo = new ExoPlayer.Builder(a).build();
+        exo.setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true);
+        exo.setWakeMode(C.WAKE_MODE_NETWORK);
+        exo.setTrackSelectionParameters(exo.getTrackSelectionParameters().buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .setMaxVideoSize(1920, 1080) // the TV's own resolution; 4K variants only cost bandwidth
+                .build());
+        exo.setVideoTextureView(texture);
+        exo.addListener(new androidx.media3.common.Player.Listener() {
+            @Override
+            public void onPlaybackStateChanged(int state) {
+                if (state == androidx.media3.common.Player.STATE_BUFFERING) {
+                    spinner.setVisibility(View.VISIBLE);
+                } else if (state == androidx.media3.common.Player.STATE_READY) {
+                    h.removeCallbacks(stalled);
+                    spinner.setVisibility(View.GONE);
+                    if (!ready) {
+                        ready = true;
+                        if (!firstFrame && hasVideo()) h.postDelayed(noPicture, PICTURE_MS);
+                        else if (!hasVideo()) curtain.setVisibility(View.GONE); // radio-style, sound only
+                    }
+                } else if (state == androidx.media3.common.Player.STATE_ENDED) {
+                    next("ended");
+                }
+            }
+
+            @Override
+            public void onRenderedFirstFrame() {
+                firstFrame = true;
+                h.removeCallbacks(noPicture);
+                curtain.setVisibility(View.GONE);
+                spinner.setVisibility(View.GONE);
+            }
+
+            @Override
+            public void onVideoSizeChanged(VideoSize size) {
+                if (size.width == 0 || size.height == 0) return;
+                videoW = Math.round(size.width * size.pixelWidthHeightRatio);
+                videoH = size.height;
+                fit();
+            }
+
+            @Override
+            public void onTracksChanged(Tracks tracks) {
+                checkAudio(tracks);
+            }
+
+            @Override
+            public void onPlayerError(PlaybackException e) {
+                if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    // A live stream we fell behind on: jump back to the live edge.
+                    exo.seekToDefaultPosition();
+                    exo.prepare();
+                    return;
+                }
+                next("error " + e.getErrorCodeName() + ": " + e.getMessage());
+            }
+        });
+        return exo;
     }
 
-    @Override
-    public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int ht) {}
+    private boolean hasVideo() {
+        return exo != null && exo.getCurrentTracks().containsType(C.TRACK_TYPE_VIDEO);
+    }
 
-    @Override
-    public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
-        if (player != null) {
-            try { player.setSurface(null); } catch (RuntimeException ignored) {}
+    /** Audio the TV can't decode (some broadcast streams' MPEG-1 Layer II on Fire TV sticks): try the next stream. */
+    private void checkAudio(Tracks tracks) {
+        if (audioChecked || !tracks.containsType(C.TRACK_TYPE_AUDIO)) return;
+        boolean playable = false;
+        String format = null;
+        for (Tracks.Group g : tracks.getGroups()) {
+            if (g.getType() != C.TRACK_TYPE_AUDIO) continue;
+            for (int i = 0; i < g.length; i++) {
+                if (g.isTrackSupported(i)) playable = true;
+                else if (format == null) format = g.getTrackFormat(i).sampleMimeType;
+            }
         }
-        if (surface != null) surface.release();
-        surface = null;
-        return true;
+        audioChecked = true;
+        if (playable) return;
+        badAudio = format == null ? "unknown" : format.replace("audio/", "");
+        JSONArray streams = channel.optJSONArray("s");
+        if (streams != null && stream + 1 < streams.length()) { next("audio " + badAudio + " can't be decoded"); return; }
+        int gen = generation;
+        setStatus("audio");
+        h.postDelayed(() -> { if (gen == generation) setStatus(null); }, 10_000);
     }
-
-    @Override
-    public void onSurfaceTextureUpdated(SurfaceTexture st) {}
 
     // ---------- Channels and streams
 
@@ -261,7 +325,6 @@ final class Player implements TextureView.SurfaceTextureListener {
         index = ((index + delta) % n + n) % n;
         channel = list.optJSONObject(index);
         stream = 0;
-        retries = 0;
         if (mode == FULL) showInfo();
         listener.onPlayer(mode, channel);
         play();
@@ -269,140 +332,60 @@ final class Player implements TextureView.SurfaceTextureListener {
 
     private void play() {
         generation++;
-        int gen = generation;
         h.removeCallbacks(stalled);
         h.removeCallbacks(noPicture);
-        release();
+        ready = firstFrame = audioChecked = false;
         curtain.setVisibility(View.VISIBLE);
         setStatus(null);
         JSONArray streams = channel.optJSONArray("s");
         if (streams == null || stream >= streams.length()) {
+            if (exo != null) exo.stop();
             spinner.setVisibility(View.GONE);
             setStatus("na");
             return;
         }
         spinner.setVisibility(View.VISIBLE);
-        if (surface == null) return; // onSurfaceTextureAvailable starts it
-
         JSONObject s = streams.optJSONObject(stream);
         String url = s.optString("u");
-        Map<String, String> headers = new HashMap<>();
-        if (s.has("ua")) headers.put("User-Agent", s.optString("ua"));
-        if (s.has("r")) headers.put("Referer", s.optString("r"));
         Log.i(MainActivity.TAG, "play " + channel.optString("id") + " #" + stream + " " + url);
+
+        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(10_000)
+                .setReadTimeoutMs(15_000)
+                .setUserAgent(s.has("ua") ? s.optString("ua") : "ChannelAtlas/1.0 (Android TV)");
+        if (s.has("r")) {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Referer", s.optString("r"));
+            http.setDefaultRequestProperties(headers);
+        }
+        MediaItem.Builder item = new MediaItem.Builder().setUri(url);
+        if (url.toLowerCase(Locale.ROOT).contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
+
+        ExoPlayer p = exo();
+        p.setMediaSource(new DefaultMediaSourceFactory(http).createMediaSource(item.build()));
+        p.prepare();
+        p.setPlayWhenReady(true);
         h.postDelayed(stalled, TIMEOUT_MS);
-        // Pick the stream's video variant ourselves (network, so off the main thread), then start the player.
-        new Thread(() -> {
-            String chosen = url;
-            try {
-                chosen = videoVariant(url, headers);
-            } catch (Exception e) {
-                Log.i(MainActivity.TAG, "variant: " + e);
-            }
-            String target = chosen;
-            h.post(() -> { if (gen == generation) start(target, headers, gen); });
-        }, "variant").start();
     }
 
-    private void start(String url, Map<String, String> headers, int gen) {
-        if (surface == null) return; // onSurfaceTextureAvailable plays it again
-        MediaPlayer mp = new MediaPlayer();
-        player = mp;
-        try {
-            mp.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build());
-            mp.setSurface(surface);
-            mp.setScreenOnWhilePlaying(true);
-            mp.setDataSource(a, Uri.parse(url), headers);
-        } catch (IOException | RuntimeException e) {
-            Log.i(MainActivity.TAG, "can't open stream: " + e);
-            h.post(() -> { if (gen == generation) next("can't open"); });
-            return;
-        }
-        mp.setOnPreparedListener(p -> {
-            if (gen != generation) return;
-            h.removeCallbacks(stalled);
-            h.postDelayed(noPicture, 12_000);
-            p.start();
-        });
-        mp.setOnVideoSizeChangedListener((p, w, ht) -> {
-            if (gen != generation || w == 0 || ht == 0) return;
-            videoW = w;
-            videoH = ht;
-            fit();
-        });
-        mp.setOnInfoListener((p, what, extra) -> {
-            if (gen != generation) return false;
-            if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                h.removeCallbacks(noPicture);
-                curtain.setVisibility(View.GONE);
-                spinner.setVisibility(View.GONE);
-            } else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) spinner.setVisibility(View.VISIBLE);
-            else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END) spinner.setVisibility(View.GONE);
-            return false;
-        });
-        mp.setOnErrorListener((p, what, extra) -> {
-            if (gen == generation) next("error " + what + "/" + extra);
-            return true;
-        });
-        mp.setOnCompletionListener(p -> { if (gen == generation) next("ended"); });
-        try {
-            mp.prepareAsync();
-        } catch (IllegalStateException e) {
-            // The surface can still be busy with the channel before; give it a moment and try the same stream again.
-            Log.i(MainActivity.TAG, "prepare failed, retrying: " + e);
-            release();
-            if (retries++ < 3) h.postDelayed(() -> { if (gen == generation) play(); }, 400);
-            else h.post(() -> { if (gen == generation) next("can't prepare"); });
-            return;
-        }
-        probeAudio(url, headers, gen);
+    private void next(String why) {
+        Log.i(MainActivity.TAG, "stream " + stream + " of " + channel.optString("id") + ": " + why);
+        stream++;
+        play();
     }
 
-    /**
-     * For an HLS master playlist, the URL of its best variant that has video (up to 1080p). Android's player picks by
-     * bandwidth alone and can land on an audio-only variant (some free channels list one), which plays sound with no
-     * picture. Returns `url` itself when it isn't a master playlist or says nothing about video.
-     */
-    private static String videoVariant(String url, Map<String, String> headers) throws IOException {
-        if (!url.toLowerCase(Locale.ROOT).contains(".m3u8")) return url;
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(8000);
-        for (Map.Entry<String, String> e : headers.entrySet()) c.setRequestProperty(e.getKey(), e.getValue());
-        String best = null, base;
-        long bestScore = -1;
-        boolean master = false;
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
-            base = c.getURL().toString();
-            String inf = null;
-            for (String line; (line = r.readLine()) != null; ) {
-                line = line.trim();
-                if (line.startsWith("#EXT-X-STREAM-INF:")) { inf = line; master = true; continue; }
-                if (inf == null || line.isEmpty() || line.startsWith("#")) continue;
-                String attrs = inf.toUpperCase(Locale.ROOT);
-                inf = null;
-                int height = 0;
-                java.util.regex.Matcher m = java.util.regex.Pattern.compile("RESOLUTION=(\\d+)X(\\d+)").matcher(attrs);
-                if (m.find()) height = Integer.parseInt(m.group(2));
-                boolean video = height > 0 || attrs.contains("AVC1") || attrs.contains("HVC1") || attrs.contains("HEV1");
-                if (!video) continue;
-                java.util.regex.Matcher bw = java.util.regex.Pattern.compile("BANDWIDTH=(\\d+)").matcher(attrs);
-                long bandwidth = bw.find() ? Long.parseLong(bw.group(1)) : 0;
-                // H.264 over HEVC (Fire OS 7's player can't read HEVC in HLS transport streams); then up to 1080p, the
-                // higher the better; then the bandwidth.
-                boolean hevc = attrs.contains("HVC1") || attrs.contains("HEV1");
-                long score = (hevc ? 0 : 1_000_000_000_000L) + (height > 1080 ? 0 : height) * 100_000_000L
-                        + Math.min(bandwidth, 99_999_999L);
-                if (score > bestScore) { bestScore = score; best = line; }
-            }
-        } finally {
-            c.disconnect();
+    /** Stops playback for good (the panel is hidden or the app leaves the screen). */
+    void stop() {
+        generation++;
+        h.removeCallbacks(stalled);
+        h.removeCallbacks(noPicture);
+        if (exo != null) {
+            exo.release();
+            exo = null;
         }
-        if (!master || best == null) return url;
-        String chosen = new URL(new URL(base), best).toString();
-        Log.i(MainActivity.TAG, "variant " + chosen);
-        return chosen;
+        channel = null;
+        statusKind = null;
     }
 
     /** Shows a message on the video ("na": nothing plays, "audio": no sound), worded for the current size. */
@@ -414,114 +397,6 @@ final class Player implements TextureView.SurfaceTextureListener {
                 ? (mini ? "Not available right now" : "This channel isn't available right now.\n▲ ▼  try another channel")
                 : (mini ? "No sound on this TV" : "No sound: this TV can't play this channel's audio (" + badAudio + ")."));
         status.setVisibility(View.VISIBLE);
-    }
-
-    private void next(String why) {
-        Log.i(MainActivity.TAG, "stream " + stream + " of " + channel.optString("id") + ": " + why);
-        stream++;
-        retries = 0;
-        play();
-    }
-
-    /** Stops playback for good (the panel is hidden or the app leaves the screen). */
-    void stop() {
-        generation++;
-        h.removeCallbacks(stalled);
-        h.removeCallbacks(noPicture);
-        release();
-        channel = null;
-    }
-
-    /** Releases the current player off the main thread: a stuck network stream can make release() slow. */
-    private void release() {
-        MediaPlayer old = player;
-        player = null;
-        if (old == null) return;
-        old.setOnErrorListener(null);
-        old.setOnInfoListener(null);
-        old.setOnPreparedListener(null);
-        old.setOnCompletionListener(null);
-        old.setOnVideoSizeChangedListener(null);
-        try {
-            old.setSurface(null); // free the surface for the next player right away
-        } catch (RuntimeException ignored) {}
-        new Thread(old::release, "player-release").start();
-    }
-
-    // ---------- Audio this TV can't decode
-
-    /**
-     * Fire TV sticks can't decode MPEG-1 Layer II audio, which some broadcast streams use: the picture plays with no
-     * sound and no error, and HLS doesn't list its tracks to the app. So read the first segment's formats ourselves.
-     */
-    private void probeAudio(String url, Map<String, String> headers, int gen) {
-        new Thread(() -> {
-            String bad = null;
-            try {
-                bad = undecodableAudio(firstSegment(url, headers), headers);
-            } catch (Exception e) {
-                Log.i(MainActivity.TAG, "audio probe: " + e);
-            }
-            String audio = bad;
-            if (audio != null) h.post(() -> onBadAudio(audio, gen));
-        }, "audio-probe").start();
-    }
-
-    private void onBadAudio(String audio, int gen) {
-        if (gen != generation) return;
-        JSONArray streams = channel.optJSONArray("s");
-        if (streams != null && stream + 1 < streams.length()) { next("audio " + audio + " can't be decoded"); return; }
-        badAudio = audio;
-        setStatus("audio");
-        h.postDelayed(() -> { if (gen == generation) setStatus(null); }, 6000);
-    }
-
-    /** The first media segment of an HLS playlist (following a master playlist to its first variant), or null. */
-    private static String firstSegment(String url, Map<String, String> headers) throws IOException {
-        for (int depth = 0; depth < 3; depth++) {
-            if (!url.toLowerCase(Locale.ROOT).contains(".m3u8")) return depth == 0 ? null : url;
-            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(8000);
-            for (Map.Entry<String, String> e : headers.entrySet()) c.setRequestProperty(e.getKey(), e.getValue());
-            String next = null;
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
-                url = c.getURL().toString(); // after redirects, for relative links
-                for (String line; (line = r.readLine()) != null; ) {
-                    line = line.trim();
-                    if (!line.isEmpty() && !line.startsWith("#")) { next = line; break; }
-                }
-            } finally {
-                c.disconnect();
-            }
-            if (next == null) return null;
-            url = new URL(new URL(url), next).toString();
-            if (!url.toLowerCase(Locale.ROOT).contains(".m3u8")) return url;
-        }
-        return null;
-    }
-
-    /** The audio format in `segment` that this TV has no decoder for, or null. */
-    private static String undecodableAudio(String segment, Map<String, String> headers) throws IOException {
-        if (segment == null) return null;
-        MediaExtractor ex = new MediaExtractor();
-        try {
-            ex.setDataSource(segment, headers);
-            MediaCodecList codecs = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
-            String bad = null;
-            for (int i = 0; i < ex.getTrackCount(); i++) {
-                MediaFormat f = ex.getTrackFormat(i);
-                String mime = f.getString(MediaFormat.KEY_MIME);
-                if (mime == null || !mime.startsWith("audio/")) continue;
-                int rate = f.containsKey(MediaFormat.KEY_SAMPLE_RATE) ? f.getInteger(MediaFormat.KEY_SAMPLE_RATE) : 48000;
-                int ch = f.containsKey(MediaFormat.KEY_CHANNEL_COUNT) ? f.getInteger(MediaFormat.KEY_CHANNEL_COUNT) : 2;
-                if (codecs.findDecoderForFormat(MediaFormat.createAudioFormat(mime, rate, ch)) != null) return null;
-                bad = mime.replace("audio/", "");
-            }
-            return bad;
-        } finally {
-            ex.release();
-        }
     }
 
     // ---------- Overlay and keys (full screen only)
@@ -574,11 +449,7 @@ final class Player implements TextureView.SurfaceTextureListener {
                 if (down) showInfo();
                 return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                if (down && player != null) {
-                    try {
-                        if (player.isPlaying()) player.pause(); else player.start();
-                    } catch (IllegalStateException ignored) {}
-                }
+                if (down && exo != null) exo.setPlayWhenReady(!exo.getPlayWhenReady());
                 return true;
         }
         return false;

@@ -19,14 +19,19 @@ if [ ! -f app/res/drawable-xhdpi/banner.png ]; then
   "${J}java" -Djava.awt.headless=true tools/MakeArt.java app/res/drawable-xhdpi
 fi
 
+# The player's libraries (Media3 ExoPlayer and its dependencies), downloaded and checked once into libs/.
+tools/fetch_libs.sh
+LIBS="$(ls libs/*.jar | tr '\n' ':')"
+
 rm -rf out && mkdir -p out/gen out/classes
 "$BT/aapt2" compile --dir app/res -o out/res.zip
 "$BT/aapt2" link -o out/base.apk -I "$AJ" --manifest app/AndroidManifest.xml --java out/gen out/res.zip \
-  --min-sdk-version 22 --target-sdk-version 33 -A app/assets
-"${J}javac" -nowarn -Xlint:-options -source 8 -target 8 -bootclasspath "$AJ:$BT/core-lambda-stubs.jar" -classpath "$AJ" \
+  --min-sdk-version 23 --target-sdk-version 33 -A app/assets
+"${J}javac" -nowarn -Xlint:-options -source 8 -target 8 -bootclasspath "$AJ:$BT/core-lambda-stubs.jar" -classpath "$AJ:$LIBS" \
   -encoding UTF-8 -d out/classes $(find app/src out/gen -name '*.java')
-"$BT/d8" --release --min-api 22 --lib "$AJ" --output out $(find out/classes -name '*.class')
-(cd out && zip -qj base.apk classes.dex)
+# The libraries go into the app too; together they need more than one dex file.
+"$BT/d8" --release --min-api 23 --lib "$AJ" --output out $(find out/classes -name '*.class') libs/*.jar
+(cd out && zip -qj base.apk classes*.dex)
 "$BT/zipalign" -f -p 4 out/base.apk out/aligned.apk
 
 # Signed with this folder's own key (made once; updates need the same key, so keep channelatlas.keystore).

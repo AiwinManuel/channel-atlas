@@ -28,7 +28,11 @@ The list updates itself once a day. Some channels are geo-blocked or not on 24/7
 
 ## Building
 
-No Gradle needed. You need a JDK 17+ and the Android SDK (build-tools 34, platform android-34).
+No Gradle needed. You need a JDK 17+ and the Android SDK (build-tools 35 or newer, platform android-34). The
+d8 in build-tools 34 crashes on one of the player's libraries.
+
+On its first run `build.sh` calls `tools/fetch_libs.sh`, which downloads Media3 ExoPlayer and its dependencies
+(about 7 MB) into `libs/` from Google's Maven repository and Maven Central and checks each file's published SHA-1.
 
 ```bash
 ./build.sh
@@ -43,6 +47,6 @@ adb install -r ChannelAtlas.apk
 - `Catalog.java` streams iptv-org's JSON files (about 26 MB) and writes one compact `catalog.json` (a few MB) on the TV.
 - `MainActivity.java` hosts the browsing screen (`app/assets/`: HTML, CSS and JS) in a WebView and connects it to Java.
 - `Player.java` is the video panel over the browsing screen (hidden, full screen or mini). It plays streams with
-  Android's own MediaPlayer, picks an H.264 video variant from HLS playlists itself, and sends the User-Agent or
-  Referer some channels need. Fire OS 7's player can't read HEVC inside HLS, so HEVC-only channels don't play.
+  Media3 ExoPlayer, which reads HEVC in HLS (Fire OS 7's own player can't) and reports which tracks the TV can decode,
+  and sends the User-Agent or Referer some channels need. Captions stay off.
 - `tools/MakeArt.java` draws the icon and the Fire TV banner.
