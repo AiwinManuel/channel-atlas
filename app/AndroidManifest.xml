@@ -31,10 +31,5 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".PlayerActivity"
-            android:exported="false"
-            android:screenOrientation="landscape"
-            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode" />
     </application>
 </manifest>

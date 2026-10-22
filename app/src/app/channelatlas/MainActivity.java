@@ -2,7 +2,6 @@ package app.channelatlas;
 
 import android.app.Activity;
 import android.content.Context;
-import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,16 +13,21 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** The browsing screen: a WebView with the UI in assets/, talking to Java through `Android`. */
-public class MainActivity extends Activity {
+/**
+ * The one screen: the browsing UI (a WebView with the page in assets/) and, over it, the video panel (Player), which
+ * is either hidden, full screen or a mini window that keeps playing while you browse.
+ */
+public class MainActivity extends Activity implements Player.Listener {
     static final String TAG = "ChannelAtlas";
 
     private WebView web;
+    private Player player;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private volatile boolean syncing;
     private boolean loaded;
@@ -31,13 +35,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(0xFF0A0A0F);
+
         web = new WebView(this);
-        web.setBackgroundColor(0xFF0B1220);
+        web.setBackgroundColor(0xFF0A0A0F);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true);
-        s.setMediaPlaybackRequiresUserGesture(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         web.addJavascriptInterface(new Bridge(), "Android");
@@ -47,19 +53,28 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) { loaded = true; }
         });
         web.loadUrl("file:///android_asset/index.html");
-        setContentView(web);
+        root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+
+        player = new Player(this, root, this);
+        setContentView(root);
         web.requestFocus();
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        String id = PlayerActivity.lastId;
-        if (loaded && id != null) js("app.returned(" + JSONObject.quote(id) + ")");
+    public void onPlayer(int mode, JSONObject channel) {
+        if (mode != Player.FULL) web.requestFocus();
+        if (!loaded) return;
+        JSONObject o = new JSONObject();
+        try {
+            o.put("mode", mode == Player.FULL ? "full" : mode == Player.MINI ? "mini" : "none");
+            if (channel != null) o.put("id", channel.optString("id")).put("name", channel.optString("n"));
+        } catch (JSONException ignored) {}
+        js("app.player(" + o + ")");
     }
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
+        if (player.mode() == Player.FULL && player.onKey(e)) return true;
         String key = null;
         switch (e.getKeyCode()) {
             case KeyEvent.KEYCODE_MENU: key = "menu"; break;
@@ -84,7 +99,14 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onStop() {
+        super.onStop();
+        player.setMode(Player.NONE); // Home button or another app: stop the stream
+    }
+
+    @Override
     protected void onDestroy() {
+        player.stop();
         web.destroy();
         super.onDestroy();
     }
@@ -114,16 +136,31 @@ public class MainActivity extends Activity {
             }, "catalog-sync").start();
         }
 
+        /** Plays `list[index]` full screen; ▲/▼ in the player move along `list`. */
         @JavascriptInterface
         public void play(String list, int index) {
+            JSONArray l;
             try {
-                PlayerActivity.list = new JSONArray(list);
-                PlayerActivity.index = index;
+                l = new JSONArray(list);
             } catch (JSONException e) {
                 Log.w(TAG, "bad play list", e);
                 return;
             }
-            ui.post(() -> startActivity(new Intent(MainActivity.this, PlayerActivity.class)));
+            ui.post(() -> player.open(l, index));
+        }
+
+        /** The mini window back to full screen. */
+        @JavascriptInterface
+        public void expand() { ui.post(() -> { if (player.mode() == Player.MINI) player.setMode(Player.FULL); }); }
+
+        /** Stops the mini window. */
+        @JavascriptInterface
+        public void stop() { ui.post(() -> player.setMode(Player.NONE)); }
+
+        /** Where the mini window goes, in the page's CSS pixels. */
+        @JavascriptInterface
+        public void miniRect(double x, double y, double w, double h, double cssWidth) {
+            ui.post(() -> player.setMiniRect(x, y, w, h, cssWidth));
         }
 
         @JavascriptInterface

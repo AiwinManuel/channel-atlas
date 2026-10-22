@@ -9,17 +9,22 @@ it links to streams that broadcasters make publicly available. Adult, closed and
 
 ## Using it
 
-- **Filters (top row):** Region, Country, Language and Genre each open a list with channel counts. The counts follow
-  your other filters, so you only see choices that have channels.
-- **Sort:** name A–Z or Z–A, country, best quality first, or most backup streams.
-- **Search:** opens the on-screen keyboard and searches channel names and alternate names.
-- **★ Favorites:** the Menu button (☰) on a channel adds it to your favorites or removes it. The Favorites chip shows only those.
-- **Random:** plays a random channel from the current list. **Clear** resets every filter.
-- **Watching:** OK plays a channel. In the player, ▲/▼ (or Channel +/−) switches channels along your list, OK shows
-  what's on, and Back returns to the list. When a stream fails or stalls, the next backup stream is tried.
-- ⏪/⏩ jump a page in the grid or in a list.
+The home screen works like a streaming app: a big banner for the channel you're on, and rows of channels below it.
 
-The list updates itself once a day. Some channels are geo-blocked or not on 24/7, and the cards say so.
+- **Rows:** Continue watching, My List, Top picks in HD, one row per genre (News, Movies, Sports…) and rows for the
+  countries with the most channels. ◀ ▶ move along a row, ▲ ▼ between rows, ⏪ ⏩ jump six channels.
+- **Side menu** (◀ from the start of a row): Search, Home, My List, Genres (jump to a genre's row), Language,
+  Region (a region like Europe or a single country), Sort (recommended, A–Z, best quality) and Random.
+  Language and Region shape every row, and their lists show channel counts.
+- **My List:** the Menu button (☰) on a channel adds it or removes it.
+- **Watching:** OK plays a channel full screen. ▲ ▼ (or Channel + −) switch along the row you came from, and OK shows
+  what's on. When a stream fails, stalls, shows no picture or has audio the TV can't play, the next backup stream is
+  tried.
+- **Mini player:** Back while watching shrinks the video into the banner, where it keeps playing while you browse.
+  ▲ from the top row, then OK, brings it back full screen. Picking another channel replaces it. Back on the home
+  screen stops it.
+
+The list updates itself once a day. Some channels are geo-blocked or not on 24/7, and the banner says so.
 
 ## Building
 
@@ -37,5 +42,7 @@ adb install -r ChannelAtlas.apk
 
 - `Catalog.java` streams iptv-org's JSON files (about 26 MB) and writes one compact `catalog.json` (a few MB) on the TV.
 - `MainActivity.java` hosts the browsing screen (`app/assets/`: HTML, CSS and JS) in a WebView and connects it to Java.
-- `PlayerActivity.java` plays streams with Android's own player, sending the User-Agent or Referer some channels need.
+- `Player.java` is the video panel over the browsing screen (hidden, full screen or mini). It plays streams with
+  Android's own MediaPlayer, picks an H.264 video variant from HLS playlists itself, and sends the User-Agent or
+  Referer some channels need. Fire OS 7's player can't read HEVC inside HLS, so HEVC-only channels don't play.
 - `tools/MakeArt.java` draws the icon and the Fire TV banner.
