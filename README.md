@@ -13,6 +13,7 @@ Channel data comes from the community-run [iptv-org](https://github.com/iptv-org
 ([API](https://github.com/iptv-org/api)). The app hosts and restreams nothing: it plays streams that broadcasters
 make publicly available, straight from their servers. Adult, closed and blocklisted channels are left out. Whether a
 channel plays depends on its broadcaster: some are geo-blocked, some aren't on around the clock, and some go offline.
+Please read the [legal notice](#legal-notice) before using or sharing it.
 
 ## Using it
 
@@ -107,3 +108,38 @@ The result is `ChannelAtlas.apk` (about 3 MB), for Android 6.0 (API 23) and newe
   tries a backup stream or says "No sound".
 - Free streams come and go. A channel in the list may be offline, geo-blocked or slow to start.
 - There are no automated tests; everything was checked by hand on the TV.
+
+## Legal notice
+
+Channel Atlas is an experimental media player. It contains no video, audio or channel lists of its own.
+
+- **No content is hosted or redistributed.** The app downloads a public list of channel links from the iptv-org
+  project and plays each stream directly from the server that publishes it. Nothing passes through the authors or
+  this repository.
+- **The authors don't control, check or endorse any stream.** Channels are listed by a third party. The authors make
+  no claim that any particular stream is authorized by its rights holder, available in your country, accurate or
+  suitable.
+- **You are responsible for what you watch.** Only watch streams you're allowed to watch where you live, and follow
+  the terms of the broadcasters and services involved. Don't use this app to access content you don't have the
+  right to view.
+- **No circumvention.** The app doesn't bypass geo-blocking, logins, paywalls or copy protection, and must not be
+  modified to do so.
+- **Removal requests.** Channels come from iptv-org's database, and iptv-org's blocklist is respected: blocklisted
+  channels never appear. If you hold rights to a channel and want it removed, ask iptv-org to remove or blocklist it
+  ([iptv-org/iptv](https://github.com/iptv-org/iptv) explains how), and open an issue here: the app can also leave a
+  channel out on request.
+- **Not affiliated.** Channel Atlas isn't affiliated with, endorsed by or sponsored by iptv-org, famelack.com,
+  Amazon, Google or any broadcaster. Channel names and logos belong to their owners and are shown only to identify
+  the channels.
+- **No warranty.** This software is provided "as is", without warranty of any kind (see [LICENSE](LICENSE)). The
+  authors aren't liable for any use of it or of the streams it plays.
+
+This notice is general information, not legal advice. Laws on linking to and watching online streams differ from
+country to country.
+
+## License
+
+The code in this repository is released under the [MIT License](LICENSE). It covers only the code written for this
+project. The libraries `build.sh` downloads keep their own licenses: Media3 ExoPlayer, AndroidX and Guava are under
+the Apache License 2.0. Channel data comes from iptv-org under its own terms, and the streams belong to their
+broadcasters.
